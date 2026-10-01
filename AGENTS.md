@@ -1,27 +1,24 @@
 # Northstar Health Frontend Guide
 
-## Phase 1 Scope
+## Current Scope
 
-This repository is a frontend-first SvelteKit application. All records and authentication are mock data held in browser memory. There is no backend, persistent database, or real authentication in this phase. Do not treat the sample records as real patient information.
+This SvelteKit application integrates with the FastAPI backend in `../sankalp-backend`. Authentication, records, schedules, QR codes, and medical files are loaded through the service layer. The demo records remain synthetic and must not be replaced with real patient information in local development.
 
 ## Frontend Architecture
 
 - `src/routes/+page.svelte` is the current workspace route. It contains the dashboard views for overview, patient records, schedule, and profiles. Shared data access must go through service functions, not fixture imports or direct browser storage access from the UI.
 - `src/lib/services/models.ts` defines the shared TypeScript contracts.
-- `src/lib/services/mock-data.ts` contains the Phase 1 fixtures.
-- `src/lib/services/mock-delay.ts` simulates asynchronous network latency and clone-on-read behavior.
+- `src/lib/services/api-client.ts` owns API base URL resolution, cookie credentials, CSRF headers, and access-token refresh.
 - `src/lib/services/patient-service.ts` owns patient lookup and updates plus attached-file metadata.
 - `src/lib/services/doctor-service.ts` owns clinician profile reads and updates.
 - `src/lib/services/appointment-service.ts` owns the daily schedule and appointment edits.
 - `src/lib/services/auth-service.ts` owns the mock role switch (`doctor` or `patient`).
 
-The route uses Svelte 5 runes (`$state`, `$derived`) for reactive UI state and `onMount` for client-side initial loading. Keep future UI changes behind the same service interfaces. When a backend is introduced, replace the implementation inside `src/lib/services/` with API/database calls while preserving the service method contracts; components should not need to know the persistence mechanism.
+The route uses Svelte 5 runes (`$state`, `$derived`) for reactive UI state and `onMount` for client-side session loading. Keep data access behind the service interfaces and never use UI state as an authorization boundary.
 
-## Mock Service Strategy
+## Service Contracts
 
-Service methods return promises and simulate latency with `mockDelay`. They keep mutable mock records in module-local memory for the current browser session. Reloading the app resets changes. Do not add direct fixture imports to route components. Current entry points include `PatientService.getAll/getById/update/getFiles/addFile/removeFile`, `DoctorService.getProfile/updateProfile`, `AppointmentService.getDaily/update`, and `AuthService.getRole/setRole`.
-
-File uploads use `URL.createObjectURL` and service-held metadata only; no file is uploaded or persisted remotely. Revoke object URLs when files are removed. Patient QR images are rendered through the free QR Server endpoint and encode only the unique patient ID, not the full health record. The endpoint requires a network connection and is a Phase 1 convenience, not an access-control mechanism.
+Service methods return promises and map to authenticated API requests. File uploads use multipart `FormData`; file URLs point to the protected API download endpoint. QR images are fetched from the API and encode only the patient ID. `AuthService` derives role from `/auth/me`; the frontend must never switch roles locally or embed account credentials.
 
 ## Data Schema
 
@@ -42,6 +39,6 @@ Keep IDs stable and treat them as opaque identifiers. Phase 2 must define server
 
 Use `pnpm install`, `pnpm check`, `pnpm build`, and `pnpm dev` from the repository root.
 
-## Deployment Hold
+## Environment
 
-Deployment workflows and hosting configuration are intentionally paused. Do not add Vercel, GitHub Pages, or other deployment instructions/configuration until Phase 2 (backend and real authentication) is fully implemented and reviewed.
+Set `PUBLIC_API_BASE_URL` in the frontend `.env` file. For local HTTP development, set `COOKIE_SECURE=false` only in the backend's local `.env`. Before deployment, follow `../sankalp-backend/DEPLOYMENT.md`; this API is not yet certified or configured for real patient data.

@@ -1,14 +1,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Activity, AlertCircle, ArrowUpRight, CalendarDays, Check, Clock3, FilePlus2, FileText, HeartPulse, LayoutDashboard, LockKeyhole, Menu, Search, ShieldCheck, Stethoscope, Users, X } from '@lucide/svelte';
+	import { Activity, AlertCircle, ArrowUpRight, CalendarDays, Check, Clock3, FilePlus2, FileText, HeartPulse, LayoutDashboard, LockKeyhole, LogOut, Menu, Search, ShieldCheck, Users, X } from '@lucide/svelte';
 	import { AppointmentService } from '$lib/services/appointment-service';
+		import { ApiError } from '$lib/services/api-client';
 	import { AuthService } from '$lib/services/auth-service';
 	import { DoctorService } from '$lib/services/doctor-service';
 	import { PatientService } from '$lib/services/patient-service';
-	import type { Appointment, Doctor, MedicalFile, Patient, Role } from '$lib/services/models';
+	import type { Appointment, AuthUser, Doctor, MedicalFile, Patient, Role } from '$lib/services/models';
 
 	type View = 'overview' | 'patients' | 'schedule' | 'profile';
 	let role = $state<Role>('doctor');
+	let authenticated = $state(false);
+	let credentials = $state({ email: '', password: '' });
+	let authMessage = $state('');
 	let view = $state<View>('overview');
 	let doctor = $state<Doctor | null>(null);
 	let patients = $state<Patient[]>([]);
@@ -27,28 +31,89 @@
 	let doctorDraft = $state({ workingDays: '', startTime: '', endTime: '' });
 	const patientMode = $derived(role === 'patient');
 	const visiblePatients = $derived(patients.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query.toLowerCase())));
-	const qrUrl = $derived(patient ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&format=png&data=${encodeURIComponent(patient.id)}` : '');
+	let qrUrl = $state('');
 	const checkedIn = $derived(appointments.filter((item) => item.status === 'Checked in').length);
+	$effect(() => {
+		if (showQr && patient && !qrUrl) void openQr();
+		if (!showQr && qrUrl) closeQr();
+	});
 
-	onMount(() => { void load(); });
-	async function load() {
+	onMount(() => { void bootstrap(); });
+	async function bootstrap() {
+		try {
+			await load(await AuthService.getCurrentUser());
+		} catch (error) {
+			if (!(error instanceof ApiError && error.status === 401)) authMessage = 'The API is unavailable. Start the backend and try again.';
+			loading = false;
+		}
+	}
+	async function load(user: AuthUser) {
 		loading = true;
-		[role, patients, appointments, doctor] = await Promise.all([AuthService.getRole(), PatientService.getAll(), AppointmentService.getDaily(), DoctorService.getProfile()]);
-		patient = patients[0] ?? null;
-		await loadFiles();
-		loading = false;
+		role = user.role;
+		try {
+			if (user.role === 'doctor') {
+				[patients, appointments, doctor] = await Promise.all([PatientService.getAll(), AppointmentService.getDaily(), DoctorService.getProfile()]);
+				patient = patients[0] ?? null;
+			} else {
+				patient = user.patient;
+				patients = patient ? [patient] : [];
+				appointments = await AppointmentService.getMine();
+				doctor = null;
+			}
+			files = [];
+			await loadFiles();
+			authenticated = true;
+		} finally {
+			loading = false;
+		}
 	}
 	async function loadFiles() { if (patient) files = await PatientService.getFiles(patient.id); }
 	async function selectPatient(next: Patient) { patient = next; editing = false; notice = ''; await loadFiles(); }
+	async function signIn(event: SubmitEvent) {
+		event.preventDefault();
+		busy = true;
+		authMessage = '';
+		try {
+			await load(await AuthService.login(credentials));
+		} catch (error) {
+			authMessage = error instanceof Error ? error.message : 'Unable to sign in.';
+		} finally {
+			busy = false;
+		}
+	}
+	async function signOut() {
+		try {
+			await AuthService.logout();
+		} finally {
+			showQr = false;
+			if (qrUrl) URL.revokeObjectURL(qrUrl);
+			qrUrl = '';
+			authenticated = false;
+			patient = null;
+			files = [];
+			credentials = { email: '', password: '' };
+			loading = false;
+		}
+	}
+	async function openQr() {
+		if (!patient) return;
+		try {
+			qrUrl = await PatientService.getQr(patient.id);
+			showQr = true;
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to load patient QR code.';
+		}
+	}
+	function closeQr() {
+		showQr = false;
+		if (qrUrl) URL.revokeObjectURL(qrUrl);
+		qrUrl = '';
+	}
 	async function searchPatient(event: SubmitEvent) {
 		event.preventDefault();
-		const match = await PatientService.getById(query.trim());
+		const match = patients.find((item) => item.id.toLowerCase() === query.trim().toLowerCase() || item.name.toLowerCase() === query.trim().toLowerCase()) ?? await PatientService.getById(query.trim());
 		if (!match) { notice = 'No record found. Check the Patient ID and try again.'; return; }
 		await selectPatient(match); view = 'patients';
-	}
-	async function switchRole(next: Role) {
-		role = await AuthService.setRole(next); view = 'overview'; editing = false;
-		if (next === 'patient') { const own = await PatientService.getById('PT-2048'); if (own) await selectPatient(own); }
 	}
 	function beginEdit() {
 		if (!patient || patientMode) return;
@@ -59,31 +124,57 @@
 	async function saveRecord() {
 		if (!patient) return;
 		busy = true;
-		const updated = await PatientService.update(patient.id, { conditions: split(draft.conditions), allergies: split(draft.allergies), medications: split(draft.medications) });
-		if (updated) { patient = updated; patients = patients.map((item) => item.id === updated.id ? updated : item); }
-		editing = false; busy = false;
+		try {
+			const updated = await PatientService.update(patient.id, { conditions: split(draft.conditions), allergies: split(draft.allergies), medications: split(draft.medications) });
+			if (updated) { patient = updated; patients = patients.map((item) => item.id === updated.id ? updated : item); }
+			editing = false;
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to update this record.';
+		} finally {
+			busy = false;
+		}
 	}
 	async function updateAppointment(item: Appointment, changes: Partial<Appointment>) {
-		const result = await AppointmentService.update(item.id, changes);
-		if (result) appointments = appointments.map((current) => current.id === result.id ? result : current);
+		try {
+			const result = await AppointmentService.update(item.id, changes);
+			if (result) appointments = appointments.map((current) => current.id === result.id ? result : current);
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to update this appointment.';
+		}
 	}
 	async function saveDoctor() {
 		if (!doctor) return;
 		busy = true;
-		doctor = await DoctorService.updateProfile({ workingDays: split(doctorDraft.workingDays), startTime: doctorDraft.startTime, endTime: doctorDraft.endTime });
-		editingDoctor = false; busy = false;
+		try {
+			doctor = await DoctorService.updateProfile({ workingDays: split(doctorDraft.workingDays), startTime: doctorDraft.startTime, endTime: doctorDraft.endTime });
+			editingDoctor = false;
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to update clinician availability.';
+		} finally {
+			busy = false;
+		}
 	}
 	async function upload(event: Event) {
 		if (!patient || patientMode) return;
 		const input = event.currentTarget as HTMLInputElement;
-		for (const file of Array.from(input.files ?? [])) await PatientService.addFile(patient.id, { id: crypto.randomUUID(), name: file.name, type: file.type || 'application/octet-stream', size: file.size, url: URL.createObjectURL(file), addedAt: new Date().toISOString() });
-		await loadFiles(); input.value = '';
+		try {
+			for (const file of Array.from(input.files ?? [])) await PatientService.addFile(patient.id, file);
+			await loadFiles();
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to upload this file.';
+		} finally {
+			input.value = '';
+		}
 	}
 	async function removeFile(file: MedicalFile) {
 		if (!patient || patientMode) return;
-		URL.revokeObjectURL(file.url); files = await PatientService.removeFile(patient.id, file.id);
+		try {
+			files = await PatientService.removeFile(patient.id, file.id);
+		} catch (error) {
+			notice = error instanceof Error ? error.message : 'Unable to remove this file.';
+		}
 	}
-	function date(value: string) { return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(`${value}T12:00:00`)); }
+	function date(value: string | null) { return value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(`${value}T12:00:00`)) : 'Not recorded'; }
 	function time(value: string) { return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(`2026-10-01T${value}:00`)); }
 	function size(bytes: number) { return bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`; }
 </script>
@@ -96,7 +187,14 @@
 	<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 </svelte:head>
 
-<div class="app-shell">
+{#if !authenticated}
+	{#if loading}
+		<div class="loading">Connecting to your secure workspace…</div>
+	{:else}
+		<main class="auth-shell"><section class="panel auth-panel"><span class="brand-mark"><HeartPulse size={19} /></span><small class="kicker">NORTHSTAR HEALTH</small><h1>Sign in to your workspace</h1><p>Use your clinic or patient account to continue.</p><form onsubmit={signIn}><label>Email<input type="email" bind:value={credentials.email} autocomplete="username" required /></label><label>Password<input type="password" bind:value={credentials.password} autocomplete="current-password" required /></label>{#if authMessage}<p class="auth-error" role="alert">{authMessage}</p>{/if}<button class="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></form></section></main>
+	{/if}
+{:else}
+	<div class="app-shell">
 	<aside class:open={navOpen} class="sidebar">
 		<a class="brand" href="#overview" onclick={() => view = 'overview'}><span class="brand-mark"><HeartPulse size={19} /></span><span>northstar<span class="brand-light">health</span></span></a>
 		<div class="clinic"><span class="clinic-mark">N</span><span><strong>Northstar Medical</strong><small>San Francisco, CA</small></span><span class="down">⌄</span></div>
@@ -108,19 +206,19 @@
 		</nav>
 		<div class="nav-label practice">PRACTICE</div><nav><button class:active={view === 'profile'} onclick={() => { view = 'profile'; navOpen = false; }}><span class="user-symbol">◉</span>{patientMode ? 'My profile' : 'Doctor profile'}</button></nav>
 		<div class="side-spacer"></div>
-		<div class="secure"><ShieldCheck size={16} /><span><strong>Private workspace</strong><small>Demo data · Phase 1</small></span></div>
-		<div class="account"><span class="avatar">{patientMode ? 'AH' : 'MP'}</span><span><strong>{patientMode ? 'Amelia Hart' : 'Maya Patel'}</strong><small>{patientMode ? 'Patient' : 'Physician'}</small></span><span class="account-more">···</span></div>
+		<div class="secure"><ShieldCheck size={16} /><span><strong>Private workspace</strong><small>Authenticated session</small></span></div>
+		<div class="account"><span class="avatar">{(patientMode ? patient?.name : doctor?.name)?.split(' ').map((part) => part[0]).join('') ?? 'U'}</span><span><strong>{patientMode ? patient?.name : doctor?.name}</strong><small>{patientMode ? 'Patient' : 'Physician'}</small></span><span class="account-more">···</span></div>
 	</aside>
 
 	<div class="content">
-		<header class="topbar"><button class="menu icon-button" aria-label="Open navigation" onclick={() => navOpen = !navOpen}><Menu size={18} /></button><div class="crumb"><span>Northstar Medical</span><i>/</i><strong>{view === 'overview' ? 'Overview' : view === 'patients' ? 'Patient records' : view === 'schedule' ? 'Schedule' : 'Profile'}</strong></div><div class="top-actions"><span class="preview-label">PREVIEW AS</span><label class="role-select"><Stethoscope size={14} /><select aria-label="Switch demo role" value={role} onchange={(event) => void switchRole(event.currentTarget.value as Role)}><option value="doctor">Doctor</option><option value="patient">Patient</option></select><span>⌄</span></label><span class="top-avatar">{patientMode ? 'AH' : 'MP'}</span></div></header>
+		<header class="topbar"><button class="menu icon-button" aria-label="Open navigation" onclick={() => navOpen = !navOpen}><Menu size={18} /></button><div class="crumb"><span>Northstar Medical</span><i>/</i><strong>{view === 'overview' ? 'Overview' : view === 'patients' ? 'Patient records' : view === 'schedule' ? 'Schedule' : 'Profile'}</strong></div><div class="top-actions"><span class="top-avatar">{(patientMode ? patient?.name : doctor?.name)?.split(' ').map((part) => part[0]).join('') ?? 'U'}</span><button class="icon-button" aria-label="Sign out" title="Sign out" onclick={() => void signOut()}><LogOut size={15} /></button></div></header>
 		<main>
 		{#if loading}<div class="loading"><span></span>Preparing your workspace…</div>{:else}
 			{#if view === 'overview'}
 				<section class="heading"><div><div class="eyebrow">THURSDAY, OCTOBER 1, 2026 <i></i> CLINICAL WORKSPACE</div><h1>{patientMode ? 'Your health, in one place.' : 'Good morning, Dr. Patel.'}</h1><p>{patientMode ? 'A clear view of your care and health information.' : 'Your practice at a glance. Here’s what needs your attention today.'}</p></div>{#if !patientMode}<button class="primary" onclick={() => view = 'schedule'}><CalendarDays size={15} />View today’s schedule</button>{/if}</section>
-				{#if patientMode}<div class="welcome"><span class="welcome-icon"><HeartPulse size={20} /></span><span><small>YOUR PATIENT ID</small><strong>{patient?.id ?? 'PT-2048'}</strong></span><button class="secondary" onclick={() => view = 'patients'}>View my record <ArrowUpRight size={14} /></button></div>{:else}<section class="metrics"><div class="metric mint"><div>Appointments today <span class="metric-icon"><CalendarDays size={16} /></span></div><strong>{appointments.length}<small class="positive">↗ 2 from yesterday</small></strong><footer>Across 1 clinical location</footer></div><div class="metric"><div>Checked in <span class="metric-icon coral"><Activity size={16} /></span></div><strong>{checkedIn.toString().padStart(2, '0')}<small>In the waiting room</small></strong><footer>Next patient at 9:45 AM</footer></div><div class="metric"><div>Upcoming <span class="metric-icon gold"><Clock3 size={16} /></span></div><strong>{appointments.filter((item) => item.status === 'Scheduled').length.toString().padStart(2, '0')}<small>Remaining today</small></strong><footer>Last appointment at 2:00 PM</footer></div><div class="metric"><div>Active patients <span class="metric-icon blue"><Users size={16} /></span></div><strong>{patients.length.toString().padStart(2, '0')}<small>In your care</small></strong><footer>All records up to date</footer></div></section>{/if}
+				{#if patientMode}<div class="welcome"><span class="welcome-icon"><HeartPulse size={20} /></span><span><small>YOUR PATIENT ID</small><strong>{patient?.id}</strong></span><button class="secondary" onclick={() => view = 'patients'}>View my record <ArrowUpRight size={14} /></button></div>{:else}<section class="metrics"><div class="metric mint"><div>Appointments today <span class="metric-icon"><CalendarDays size={16} /></span></div><strong>{appointments.length}<small class="positive">↗ 2 from yesterday</small></strong><footer>Across 1 clinical location</footer></div><div class="metric"><div>Checked in <span class="metric-icon coral"><Activity size={16} /></span></div><strong>{checkedIn.toString().padStart(2, '0')}<small>In the waiting room</small></strong><footer>Next patient at 9:45 AM</footer></div><div class="metric"><div>Upcoming <span class="metric-icon gold"><Clock3 size={16} /></span></div><strong>{appointments.filter((item) => item.status === 'Scheduled').length.toString().padStart(2, '0')}<small>Remaining today</small></strong><footer>Last appointment at 2:00 PM</footer></div><div class="metric"><div>Active patients <span class="metric-icon blue"><Users size={16} /></span></div><strong>{patients.length.toString().padStart(2, '0')}<small>In your care</small></strong><footer>All records up to date</footer></div></section>{/if}
 				<div class="overview-grid"><section class="panel schedule-panel"><div class="panel-head"><span><small class="kicker">TODAY · THURSDAY, OCT 1</small><strong>{patientMode ? 'Care overview' : 'Today’s appointments'}</strong></span>{#if !patientMode}<button class="text-button" onclick={() => view = 'schedule'}>Full schedule <ArrowUpRight size={14} /></button>{/if}</div>
-				{#if patientMode}<div class="care-preview"><span class="care-date"><CalendarDays size={17} />Next appointment</span><strong>Annual wellness visit</strong><p>Thursday, October 8 · 10:30 AM</p><div class="care-doctor"><span class="mini-avatar">MP</span><span>Dr. Maya Patel<small>Northstar Medical</small></span></div></div>{:else}<div class="appointments">{#each appointments.slice(0, 4) as item}<div class="appointment"><span class="appointment-time"><strong>{time(item.time)}</strong><small>{item.durationMinutes} min</small></span><span class="timeline"><i class:current={item.status === 'Checked in'}></i></span><span class="appointment-patient"><i>{item.patientName.split(' ').map((part) => part[0]).join('')}</i><span><strong>{item.patientName}</strong><small>{item.type}</small></span></span><span class:checked={item.status === 'Checked in'} class="status">{item.status}</span><button class="row-action" aria-label={`Open ${item.patientName} record`} onclick={() => { const found = patients.find((entry) => entry.id === item.patientId); if (found) { void selectPatient(found); view = 'patients'; } }}><ArrowUpRight size={14} /></button></div>{/each}</div>{/if}</section>
+				{#if patientMode}<div class="care-preview">{#if appointments.length}<span class="care-date"><CalendarDays size={17} />Next appointment</span><strong>{appointments[0].type}</strong><p>{date(appointments[0].date)} · {time(appointments[0].time)} · {appointments[0].status}</p>{:else}<span class="care-date"><CalendarDays size={17} />No scheduled appointments</span><p>Your care team has not scheduled a visit.</p>{/if}</div>{:else}<div class="appointments">{#each appointments.slice(0, 4) as item}<div class="appointment"><span class="appointment-time"><strong>{time(item.time)}</strong><small>{item.durationMinutes} min</small></span><span class="timeline"><i class:current={item.status === 'Checked in'}></i></span><span class="appointment-patient"><i>{item.patientName.split(' ').map((part) => part[0]).join('')}</i><span><strong>{item.patientName}</strong><small>{item.type}</small></span></span><span class:checked={item.status === 'Checked in'} class="status">{item.status}</span><button class="row-action" aria-label={`Open ${item.patientName} record`} onclick={() => { const found = patients.find((entry) => entry.id === item.patientId); if (found) { void selectPatient(found); view = 'patients'; } }}><ArrowUpRight size={14} /></button></div>{/each}</div>{/if}</section>
 				<aside class="panel quick-panel"><div class="panel-head"><span><small class="kicker">QUICK ACCESS</small><strong>{patientMode ? 'Your record' : 'Patient lookup'}</strong></span><span class="lock"><LockKeyhole size={13} /></span></div>
 				{#if patientMode}<div class="quick-person"><span class="person-avatar">AH</span><span><strong>{patient?.name}</strong><small>Patient ID · {patient?.id}</small></span></div><button class="quick-link" onclick={() => view = 'patients'}>Open health record <ArrowUpRight size={14} /></button>{:else}<p class="description">Search by name or enter a patient ID to open a chart.</p><form class="search" onsubmit={searchPatient}><Search size={16} /><input bind:value={query} aria-label="Search patients" placeholder="Name or patient ID…" /><button aria-label="Search"><ArrowUpRight size={15} /></button></form>{#if notice}<p class="notice"><AlertCircle size={13} />{notice}</p>{/if}<div class="recent-title">RECENT RECORDS <span>{patients.length}</span></div><div class="recent">{#each visiblePatients.slice(0, 3) as item}<button onclick={() => { void selectPatient(item); view = 'patients'; }}><i>{item.name.split(' ').map((part) => part[0]).join('')}</i><span><strong>{item.name}</strong><small>{item.id}</small></span><ArrowUpRight size={13} /></button>{/each}</div>{/if}</aside></div>
 				{#if !patientMode}<div class="records-ready"><span><ShieldCheck size={17} /></span><div><strong>Records are ready for review</strong><small>All {patients.length} active patient charts were updated this week.</small></div><button onclick={() => view = 'patients'}>Browse records <ArrowUpRight size={13} /></button></div>{/if}
@@ -133,16 +231,17 @@
 				<section class="panel info-panel files-panel"><div class="panel-head"><span><small class="kicker">ATTACHED TO THIS RECORD</small><strong>Medical files <i class="file-count">{files.length}</i></strong></span>{#if !patientMode}<label class="secondary upload"><FilePlus2 size={14} />Upload files<input type="file" accept="image/*,.pdf,.doc,.docx,.dcm" multiple onchange={upload} /></label>{/if}</div>{#if files.length}<div class="file-list">{#each files as file}<div class="file-row"><span class="file-icon"><FileText size={16} /></span><span><a href={file.url} target="_blank" rel="noreferrer">{file.name}</a><small>{size(file.size)} · Added {date(file.addedAt.slice(0, 10))}</small></span>{#if !patientMode}<button class="icon-button" aria-label={`Remove ${file.name}`} onclick={() => void removeFile(file)}><X size={14} /></button>{/if}</div>{/each}</div>{:else}<div class="empty-files"><FileText size={17} />{patientMode ? 'No files have been added to your record.' : 'No files yet. Add a scan, referral, or lab result.'}</div>{/if}</section></div>{:else}<div class="panel empty-files">No patient record selected.</div>{/if}</div>
 			{:else if view === 'schedule'}
 				<section class="heading compact"><div><div class="eyebrow">THURSDAY, OCTOBER 1, 2026 <i></i> DAILY PLANNER</div><h1>Today’s schedule</h1><p>{patientMode ? 'Your upcoming care with Northstar Medical.' : `${appointments.length} appointments · ${doctor?.clinic ?? 'Northstar Medical'}`}</p></div>{#if !patientMode && doctor}<span class="hours"><Clock3 size={14} />{time(doctor.startTime)} – {time(doctor.endTime)}</span>{/if}</section>
-				<section class="panel full-schedule"><div class="panel-head"><span><small class="kicker">APPOINTMENT LIST</small><strong>{patientMode ? 'Your next visit' : 'Thursday, October 1'}</strong></span><span class="today">TODAY</span></div>{#if patientMode}<div class="care-preview full-care"><span class="care-date"><CalendarDays size={17} />Thursday, October 8 · 10:30 AM</span><strong>Annual wellness visit</strong><p>Routine check-up with Dr. Maya Patel</p></div>{:else}<div class="table-head"><span>TIME</span><span>PATIENT</span><span>VISIT TYPE</span><span>STATUS</span><span>UPDATE</span></div>{#each appointments as item}<div class="table-row"><strong>{time(item.time)}</strong><button class="table-patient" onclick={() => { const found = patients.find((entry) => entry.id === item.patientId); if (found) { void selectPatient(found); view = 'patients'; } }}><i>{item.patientName.split(' ').map((part) => part[0]).join('')}</i><span>{item.patientName}<small>{item.patientId}</small></span></button><span class="visit-type">{item.type}</span><span class:checked={item.status === 'Checked in'} class="status">{item.status}</span><span class="table-controls"><input type="time" aria-label="Update appointment time" value={item.time} onchange={(event) => void updateAppointment(item, { time: event.currentTarget.value })} /><select aria-label="Update appointment status" value={item.status} onchange={(event) => void updateAppointment(item, { status: event.currentTarget.value as Appointment['status'] })}><option>Scheduled</option><option>Checked in</option><option>Completed</option></select></span></div>{/each}{/if}</section>
+				<section class="panel full-schedule"><div class="panel-head"><span><small class="kicker">APPOINTMENT LIST</small><strong>{patientMode ? 'Your appointments' : 'Thursday, October 1'}</strong></span><span class="today">TODAY</span></div>{#if patientMode}{#if appointments.length}{#each appointments as item}<div class="care-preview full-care"><span class="care-date"><CalendarDays size={17} />{date(item.date)} · {time(item.time)}</span><strong>{item.type}</strong><p>{item.status}</p></div>{/each}{:else}<div class="empty-files">No appointments are scheduled.</div>{/if}{:else}<div class="table-head"><span>TIME</span><span>PATIENT</span><span>VISIT TYPE</span><span>STATUS</span><span>UPDATE</span></div>{#each appointments as item}<div class="table-row"><strong>{time(item.time)}</strong><button class="table-patient" onclick={() => { const found = patients.find((entry) => entry.id === item.patientId); if (found) { void selectPatient(found); view = 'patients'; } }}><i>{item.patientName.split(' ').map((part) => part[0]).join('')}</i><span>{item.patientName}<small>{item.patientId}</small></span></button><span class="visit-type">{item.type}</span><span class:checked={item.status === 'Checked in'} class="status">{item.status}</span><span class="table-controls"><input type="time" aria-label="Update appointment time" value={item.time} onchange={(event) => void updateAppointment(item, { time: event.currentTarget.value })} /><select aria-label="Update appointment status" value={item.status} onchange={(event) => void updateAppointment(item, { status: event.currentTarget.value as Appointment['status'] })}><option>Scheduled</option><option>Checked in</option><option>Completed</option></select></span></div>{/each}{/if}</section>
 			{:else}
 				<section class="heading compact"><div><div class="eyebrow">PRACTICE SETTINGS <i></i> {patientMode ? 'PERSONAL INFORMATION' : 'CLINICIAN INFORMATION'}</div><h1>{patientMode ? 'Your profile' : 'Doctor profile'}</h1><p>{patientMode ? 'Contact information connected to your medical record.' : 'Manage clinician details and weekly availability.'}</p></div>{#if !patientMode && !editingDoctor}<button class="primary" onclick={() => { if (doctor) doctorDraft = { workingDays: doctor.workingDays.join(', '), startTime: doctor.startTime, endTime: doctor.endTime }; editingDoctor = true; }}>✎ Edit profile</button>{/if}</section>
 				{#if patientMode && patient}<section class="panel profile"><div class="profile-banner"></div><div class="profile-content"><span class="profile-avatar">AH</span><small class="kicker">PATIENT</small><h2>{patient.name}</h2><p>Patient ID · {patient.id}</p><div class="profile-details"><span>Date of birth<strong>{date(patient.dateOfBirth)}</strong></span><span>Phone<strong>{patient.phone}</strong></span><span>Email<strong>{patient.email}</strong></span></div></div></section>{:else if doctor}<section class="panel profile"><div class="profile-banner"></div><div class="profile-content"><span class="profile-avatar">MP</span><small class="kicker">ATTENDING PHYSICIAN</small><h2>{doctor.name}</h2><p>{doctor.specialty} · License {doctor.license}</p>{#if editingDoctor}<div class="doctor-edit"><label>Working days<input bind:value={doctorDraft.workingDays} /></label><label>Start time<input type="time" bind:value={doctorDraft.startTime} /></label><label>End time<input type="time" bind:value={doctorDraft.endTime} /></label><span class="edit-actions"><button class="cancel" onclick={() => editingDoctor = false}>Cancel</button><button class="primary save" disabled={busy} onclick={saveDoctor}>{busy ? 'Saving…' : 'Save profile'}</button></span></div>{:else}<div class="profile-details"><span>Clinic<strong>{doctor.clinic}</strong></span><span>Phone<strong>{doctor.phone}</strong></span><span>Email<strong>{doctor.email}</strong></span><span>Availability<strong>{doctor.workingDays.join(', ')} · {time(doctor.startTime)}–{time(doctor.endTime)}</strong></span></div>{/if}</div></section>{/if}
 			{/if}
 		{/if}
 		</main>
-		<footer><span>© 2026 Northstar Health</span><span>Phase 1 · Demo workspace</span><span>Patient-first care <HeartPulse size={13} /></span></footer>
+		<footer><span>© 2026 Northstar Health</span><span>Authenticated API workspace</span><span>Patient-first care <HeartPulse size={13} /></span></footer>
 	</div>
-</div>
+	</div>
+{/if}
 
 {#if showQr && patient}<div class="backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) showQr = false; }}><div class="qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-title"><button class="icon-button close" aria-label="Close QR code" onclick={() => showQr = false}><X size={17} /></button><small class="kicker">SECURE RECORD ACCESS</small><h2 id="qr-title">Patient QR code</h2><p>Scan to identify <strong>{patient.name}</strong> in the Northstar workspace.</p><div class="qr-frame"><img src={qrUrl} alt={`QR code for patient ${patient.id}`} /></div><div class="qr-id"><small>UNIQUE PATIENT ID</small><strong>{patient.id}</strong></div><small class="qr-note">This code contains the patient ID only.</small></div></div>{/if}
 
@@ -152,4 +251,5 @@
 	@media(max-width:760px){.sidebar{width:250px;transform:translateX(-101%);transition:transform .2s;box-shadow:10px 0 25px #1e393210}.sidebar.open{transform:translateX(0)}.content{width:100%;margin:0}.topbar{height:56px;padding:0 16px;gap:9px}.menu{display:grid!important}.crumb{margin-right:auto;gap:7px;font-size:9px}.crumb>span:first-child,.crumb>i{display:none}.top-actions{gap:8px}.preview-label{display:none}main{padding:24px 16px 26px}.heading{align-items:flex-start;flex-direction:column;gap:13px;margin-bottom:18px}.heading h1{font-size:22px}.heading>.primary,.heading>.secondary{align-self:stretch}.metrics{gap:8px;margin-bottom:13px}.metric{min-height:108px;padding:11px}.metric>strong{gap:5px;font-size:21px}.metric>strong small{font-size:7px}.overview-grid{grid-template-columns:1fr;gap:10px}.schedule-panel,.quick-panel{padding:14px}.appointment{grid-template-columns:53px 8px minmax(0,1fr) 22px;gap:6px}.appointment>.status{display:none}.appointment-patient{gap:6px}.appointment-patient>i{width:25px;height:25px}.appointment-patient strong{font-size:8px}.records-ready{align-items:flex-start;padding:11px}.records-ready button{max-width:83px;align-self:center}.records-ready small{line-height:1.4}.footer{padding:0 16px;font-size:7px}.footer span:nth-child(2){display:none}.compact{align-items:flex-start}.records-layout{grid-template-columns:1fr}.directory{position:static}.directory-item{border-right:1px solid #eef1ef}.identity{align-items:flex-start;flex-direction:column;padding:13px}.identity-actions{align-self:flex-end}.info-panel{padding:14px}.bio-grid{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:14px}.table-head,.table-row{grid-template-columns:59px minmax(120px,1fr) 84px;gap:6px;padding-inline:5px}.table-head>:nth-child(3),.table-row>:nth-child(3){display:none}.profile{max-width:none}.profile-content{padding-inline:16px}.profile-details{grid-template-columns:1fr;gap:12px}.doctor-edit{grid-template-columns:1fr 1fr}.doctor-edit label:first-child{grid-column:1/-1}}
 	@media(max-width:420px){.role-select{gap:5px;padding-inline:6px}.role-select select{max-width:67px}.top-avatar{width:27px;height:27px}.metric>div{font-size:8px}.metric>strong{font-size:20px}.metric>strong small{max-width:70px;line-height:1.2}.appointment{grid-template-columns:48px 7px minmax(0,1fr) 20px}.appointment-time strong{font-size:9px}.appointment-patient>i{width:23px;height:23px}.appointment-patient small{font-size:7px}.bio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.identity-info{gap:9px}.demographics{line-height:1.5}.identity-actions .primary,.identity-actions .secondary{min-height:29px;padding-inline:7px;font-size:8px}.table-head,.table-row{grid-template-columns:51px minmax(105px,1fr) 76px}.table-row>strong,.table-patient{font-size:8px}.table-patient>i{width:23px;height:23px}.status{padding-inline:4px;font-size:7px}.welcome{gap:8px;padding:11px}.welcome .secondary{padding-inline:7px;font-size:8px}}
 	@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+.auth-shell{min-height:100vh;width:100%;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at 50% 0%,#e4f0eb 0,transparent 54%),#f4f7f5}.auth-panel{width:min(420px,100%);padding:30px}.auth-panel .brand-mark{margin-bottom:15px}.auth-panel h1{margin:8px 0;color:#2d433e;font:700 21px Manrope,sans-serif}.auth-panel>p{margin:0;color:#83908b;font-size:11px}.auth-panel form{display:grid;gap:13px;margin-top:22px}.auth-panel label{display:grid;gap:6px;color:#566660;font-size:10px;font-weight:600}.auth-panel input{height:38px;padding:0 10px;border:1px solid #e1e8e5;border-radius:4px;background:#fff;color:#40534d}.auth-panel form>.primary{justify-content:center;min-height:38px}.auth-error{margin:0;color:#ae5747;font-size:10px}
 </style>

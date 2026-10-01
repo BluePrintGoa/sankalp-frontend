@@ -1,18 +1,20 @@
-import { appointments } from './mock-data';
-import { mockDelay } from './mock-delay';
+import { apiJson } from './api-client';
 import type { Appointment } from './models';
-
-const schedule = structuredClone(appointments);
 
 export const AppointmentService = {
 	async getDaily(): Promise<Appointment[]> {
-		return mockDelay([...schedule].sort((a, b) => a.time.localeCompare(b.time)));
+		return apiJson<Appointment[]>('/appointments/daily');
+	},
+
+	async getMine(): Promise<Appointment[]> {
+		return apiJson<Appointment[]>('/appointments/mine');
 	},
 
 	async update(id: string, changes: Partial<Appointment>): Promise<Appointment | undefined> {
-		const appointment = schedule.find((item) => item.id === id);
-		if (!appointment) return mockDelay(undefined);
-		Object.assign(appointment, changes);
-		return mockDelay(appointment);
+		return apiJson<Appointment>(`/appointments/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(changes)
+		});
 	}
 };

@@ -1,15 +1,25 @@
-import { mockDelay } from './mock-delay';
-import type { Role } from './models';
-
-let activeRole: Role = 'doctor';
+import { apiJson } from './api-client';
+import type { AuthUser, Role } from './models';
 
 export const AuthService = {
-	async getRole(): Promise<Role> {
-		return mockDelay(activeRole, 100);
+	async getCurrentUser(): Promise<AuthUser> {
+		return apiJson<AuthUser>('/auth/me');
 	},
 
-	async setRole(role: Role): Promise<Role> {
-		activeRole = role;
-		return mockDelay(activeRole, 100);
+	async getRole(): Promise<Role> {
+		return (await this.getCurrentUser()).role;
+	},
+
+	async login(credentials: { email: string; password: string }): Promise<AuthUser> {
+		const response = await apiJson<{ user: AuthUser }>('/auth/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(credentials)
+		});
+		return response.user;
+	},
+
+	async logout(): Promise<void> {
+		await apiJson<void>('/auth/logout', { method: 'POST' });
 	}
 };

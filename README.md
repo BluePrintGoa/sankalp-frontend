@@ -1,8 +1,8 @@
 # Northstar Health
 
-Phase 1 frontend for a centralized medical patient record workspace. Patient, clinician, schedule, and authentication data are simulated in browser memory; changes reset when the application reloads.
+SvelteKit frontend for the Sankalp Medical Records API. Patient, clinician, appointment, file, and authentication requests are made through the service layer with the backend's cookie-based session.
 
-See [AGENTS.md](AGENTS.md) for the architecture, service boundaries, schemas, and Phase 2 requirements.
+See [AGENTS.md](AGENTS.md) for the service boundaries and frontend contracts. Backend setup and deployment preparation are documented in `../sankalp-backend/README.md` and `../sankalp-backend/DEPLOYMENT.md`.
 
 ## Local Development
 
@@ -10,8 +10,11 @@ Install dependencies and start the local application:
 
 ```sh
 pnpm install
+Copy-Item .env.example .env
 pnpm dev
 ```
+
+Start the API separately from `../sankalp-backend` and set `COOKIE_SECURE=false` in its local `.env` when using plain HTTP. The seeded doctor can sign in as `maya.patel@northstar.health` / `doctor123`; seeded patients use their fixture email and `patient123`. These credentials and records are for local development only.
 
 Run the Svelte/TypeScript checks and production compilation locally:
 
@@ -20,9 +23,6 @@ pnpm check
 pnpm build
 ```
 
-## Phase 1 Limitations
+## Development Data
 
-- The role selector is mock UI state, not authentication or authorization.
-- Patient records and uploads are not persisted to a database or server.
-- QR images use the external QR Server API and encode the patient ID only.
-- Deployment workflows are paused. Do not add deployment steps or configuration until Phase 2, including the backend and real authentication, is complete.
+Run `python -m scripts.seed` in the backend to load demonstration records. Do not use real patient information locally. See the backend deployment checklist before exposing either application publicly.

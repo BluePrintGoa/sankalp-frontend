@@ -1,16 +1,16 @@
-import { doctor } from './mock-data';
-import { mockDelay } from './mock-delay';
+import { apiJson } from './api-client';
 import type { Doctor } from './models';
-
-const profile = structuredClone(doctor);
 
 export const DoctorService = {
 	async getProfile(): Promise<Doctor> {
-		return mockDelay(profile);
+		return apiJson<Doctor>('/doctors/me');
 	},
 
 	async updateProfile(changes: Partial<Doctor>): Promise<Doctor> {
-		Object.assign(profile, changes);
-		return mockDelay(profile);
+		return apiJson<Doctor>('/doctors/me', {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(changes)
+		});
 	}
 };
