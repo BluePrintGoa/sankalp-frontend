@@ -77,9 +77,9 @@ export const doctor: Doctor = {
 };
 
 export const appointments: Appointment[] = [
-	{ id: 'AP-4101', patientId: 'PT-2048', patientName: 'Amelia Hart', time: '09:00', durationMinutes: 30, type: 'Follow-up', status: 'Checked in' },
-	{ id: 'AP-4102', patientId: 'PT-1932', patientName: 'Noah Williams', time: '09:45', durationMinutes: 30, type: 'Blood pressure review', status: 'Scheduled' },
-	{ id: 'AP-4103', patientId: 'PT-1756', patientName: 'Sofia Chen', time: '10:30', durationMinutes: 45, type: 'New patient', status: 'Scheduled' },
-	{ id: 'AP-4104', patientId: 'PT-1684', patientName: 'Ethan Brooks', time: '11:30', durationMinutes: 30, type: 'Diabetes check-in', status: 'Scheduled' },
-	{ id: 'AP-4105', patientId: 'PT-1932', patientName: 'Noah Williams', time: '13:30', durationMinutes: 30, type: 'Lab results', status: 'Scheduled' }
+	{ id: 'AP-4101', patientId: 'PT-2048', patientName: 'Amelia Hart', date: '2026-10-01', time: '09:00', durationMinutes: 30, type: 'Follow-up', status: 'Checked in' },
+	{ id: 'AP-4102', patientId: 'PT-1932', patientName: 'Noah Williams', date: '2026-10-01', time: '09:45', durationMinutes: 30, type: 'Blood pressure review', status: 'Scheduled' },
+	{ id: 'AP-4103', patientId: 'PT-1756', patientName: 'Sofia Chen', date: '2026-10-01', time: '10:30', durationMinutes: 45, type: 'New patient', status: 'Scheduled' },
+	{ id: 'AP-4104', patientId: 'PT-1684', patientName: 'Ethan Brooks', date: '2026-10-01', time: '11:30', durationMinutes: 30, type: 'Diabetes check-in', status: 'Scheduled' },
+	{ id: 'AP-4105', patientId: 'PT-1932', patientName: 'Noah Williams', date: '2026-10-01', time: '13:30', durationMinutes: 30, type: 'Lab results', status: 'Scheduled' }
 ];

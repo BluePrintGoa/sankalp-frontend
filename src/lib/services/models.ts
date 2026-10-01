@@ -13,7 +13,7 @@ export interface Patient {
 	conditions: string[];
 	allergies: string[];
 	medications: string[];
-	lastVisit: string;
+	lastVisit: string | null;
 }
 
 export interface Doctor {
@@ -33,6 +33,7 @@ export interface Appointment {
 	id: string;
 	patientId: string;
 	patientName: string;
+	date: string;
 	time: string;
 	durationMinutes: number;
 	type: string;
@@ -46,4 +47,12 @@ export interface MedicalFile {
 	size: number;
 	url: string;
 	addedAt: string;
+}
+
+export interface AuthUser {
+	id: string;
+	email: string;
+	role: Role;
+	patient: Patient | null;
+	doctor: Doctor | null;
 }
